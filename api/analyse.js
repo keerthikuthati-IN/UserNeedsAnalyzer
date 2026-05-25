@@ -63,7 +63,7 @@ Return ONLY valid JSON, no markdown, no explanation:
 Rules: categories must be specific to this app, positive+negative+neutral=100, verbatims must sound like real user reviews.`;
 
     const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
     });
