@@ -408,7 +408,10 @@ td{padding:9px 13px;vertical-align:middle}
             <div class="chart-hdr"><span class="chart-ttl">Sentiment mix over time (stacked)</span>
               <div class="trend-leg"><span class="leg-item"><span class="leg-dot" style="background:#107C10"></span>Positive</span><span class="leg-item"><span class="leg-dot" style="background:#D83B01"></span>Negative</span><span class="leg-item"><span class="leg-dot" style="background:#797775"></span>Neutral</span></div>
             </div>
-            <div class="chart-body"><div class="chart-wrap"><canvas id="trend-chart"></canvas></div></div>
+            <div class="chart-body">
+              <div id="trend-data-note" style="display:none;font-size:11px;color:#797775;background:#FFF4CE;border-left:3px solid #F0C000;padding:6px 10px;border-radius:4px;margin-bottom:10px;"></div>
+              <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
+            </div>
           </div>
         </div>
  
@@ -688,16 +691,43 @@ function buildCatChart(cats){
 function buildTrendChart(trend){
   const ctx=document.getElementById('trend-chart').getContext('2d');
   if(trendInst)trendInst.destroy();
+ 
+  // Separate real months from no-data months
+  const labels=trend.map(t=>t.month);
+  const posData=trend.map(t=>t.hasData?t.positive:null);
+  const negData=trend.map(t=>t.hasData?t.negative:null);
+  const neuData=trend.map(t=>t.hasData?t.neutral:null);
+  const noDataMonths=trend.filter(t=>!t.hasData).length;
+ 
+  // Show info banner if some months have no data
+  const trendNote=document.getElementById('trend-data-note');
+  if(trendNote){
+    if(noDataMonths>0){
+      trendNote.textContent='Data available for '+trend.filter(t=>t.hasData).length+' of 12 months. Empty bars indicate months where no reviews were fetched.';
+      trendNote.style.display='block';
+    } else {
+      trendNote.style.display='none';
+    }
+  }
+ 
   trendInst=new Chart(ctx,{type:'bar',
-    data:{labels:trend.map(t=>t.month),datasets:[
-      {label:'Positive',data:trend.map(t=>t.positive),backgroundColor:'#107C10',stack:'s'},
-      {label:'Negative',data:trend.map(t=>t.negative),backgroundColor:'#D83B01',stack:'s'},
-      {label:'Neutral', data:trend.map(t=>t.neutral), backgroundColor:'#A19F9D',stack:'s'},
+    data:{labels,datasets:[
+      {label:'Positive',data:posData,backgroundColor:'#107C10',stack:'s'},
+      {label:'Negative',data:negData,backgroundColor:'#D83B01',stack:'s'},
+      {label:'Neutral', data:neuData, backgroundColor:'#A19F9D',stack:'s'},
     ]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+Math.round(c.parsed.y)+'%'}}},
-      scales:{x:{stacked:true,grid:{display:false},ticks:{font:{family:'Segoe UI,sans-serif',size:10},color:'#797775',maxRotation:25}},
-        y:{stacked:true,min:0,max:100,grid:{color:'#E1DFDD'},ticks:{font:{family:'Segoe UI,sans-serif',size:10},color:'#797775',callback:v=>v+'%'}}}
+      plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{
+          label:c=>c.parsed.y===null?' No data available':' '+c.dataset.label+': '+Math.round(c.parsed.y)+'%',
+          title:t=>t[0].label+(trend[t[0].dataIndex]?.hasData?' ('+trend[t[0].dataIndex].count+' reviews)':' (no data)')
+        }}
+      },
+      scales:{
+        x:{stacked:true,grid:{display:false},ticks:{font:{family:'Segoe UI,sans-serif',size:10},color:'#797775',maxRotation:25}},
+        y:{stacked:true,min:0,max:100,grid:{color:'#E1DFDD'},ticks:{font:{family:'Segoe UI,sans-serif',size:10},color:'#797775',callback:v=>v+'%'}}
+      }
     }
   });
 }
