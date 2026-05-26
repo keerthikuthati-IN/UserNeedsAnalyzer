@@ -565,6 +565,7 @@ async function runAnalysis(){
         appInfo:scrapeData.appInfo,
         period:scrapeData.period,
         hasDates:true,
+        trend:scrapeData.trend,
         monthGroups:scrapeData.monthGroups,
         appContext:scrapeData.appInfo.name
       };
@@ -657,7 +658,11 @@ function renderAll(d, period){
   buildCatChart(d.categories);buildTable(d.categories);buildOpps(d.opportunities);buildPalette();
   const showTrend=d.trend&&d.trend.length>0;
   document.getElementById('trend-sec').style.display=showTrend?'':'none';
-  if(showTrend)buildTrendChart(d.trend);
+  if(showTrend){
+    buildTrendChart(d.trend);
+    // Always label as Last 12 months for trend
+    document.getElementById('trend-period-badge').textContent='Last 12 months';
+  }
   if(period){
     const labels={30:'Last 30 days',90:'Last 3 months',180:'Last 6 months',365:'Last 12 months'};
     document.getElementById('trend-period-badge').textContent=labels[selectedDays]||period.from+' – '+period.to;
