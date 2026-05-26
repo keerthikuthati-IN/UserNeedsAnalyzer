@@ -1,8 +1,9 @@
 {
-  "name": "user-needs-analyser",
+  "name": "signals-ai",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.20.0"
+    "@anthropic-ai/sdk": "^0.20.0",
+    "google-play-scraper": "^9.1.0"
   }
 }
