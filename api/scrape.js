@@ -1,41 +1,28 @@
-// Vercel Edge Function — Play Store scraper
-// Uses google-play-scraper to fetch real reviews with date filtering
+// Vercel Serverless Function — Play Store scraper
+// Standard Node.js runtime (NOT edge) — required for google-play-scraper
  
-export const config = { runtime: 'edge' };
+const gplay = require('google-play-scraper');
  
-export default async function handler(req) {
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
+module.exports = async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
  
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 200, headers: corsHeaders });
-  }
- 
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
  
   try {
-    const { url, days } = await req.json();
+    const { url, days } = req.body;
  
-    // Validate it's a Play Store URL
     if (!url || !url.includes('play.google.com')) {
-      return new Response(JSON.stringify({
+      return res.status(400).json({
         error: 'Only Google Play Store URLs are supported. App Store support coming soon.'
-      }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      });
     }
  
-    // Extract app ID
     const match = url.match(/id=([^&\s]+)/);
     if (!match) {
-      return new Response(JSON.stringify({ error: 'Invalid Play Store URL — could not find app ID.' }), {
-        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+      return res.status(400).json({ error: 'Invalid Play Store URL — could not find app ID.' });
     }
  
     const appId = match[1];
@@ -43,34 +30,37 @@ export default async function handler(req) {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysBack);
  
-    // Dynamically import google-play-scraper
-    const gplay = await import('google-play-scraper');
- 
     // Get app info
-    const appInfo = await gplay.default.app({ appId, lang: 'en', country: 'us' });
+    const appInfo = await gplay.app({ appId, lang: 'en', country: 'us' });
  
-    // Fetch reviews — get enough to cover the date range
-    // More days = fetch more pages
+    // Fetch reviews — paginate to get enough for the date range
     const pagesToFetch = daysBack <= 30 ? 3 : daysBack <= 90 ? 6 : daysBack <= 180 ? 10 : 15;
  
-    const reviewPages = await Promise.all(
-      Array.from({ length: pagesToFetch }, (_, i) =>
-        gplay.default.reviews({
+    let allRawReviews = [];
+    let nextToken = undefined;
+ 
+    for (let i = 0; i < pagesToFetch; i++) {
+      try {
+        const result = await gplay.reviews({
           appId,
           lang: 'en',
           country: 'us',
           num: 200,
+          sort: gplay.sort.NEWEST,
           paginate: true,
-          nextPaginationToken: undefined,
-          sort: gplay.default.sort.NEWEST,
-        }).catch(() => ({ data: [] }))
-      )
-    );
+          nextPaginationToken: nextToken,
+        });
+        allRawReviews = allRawReviews.concat(result.data || []);
+        nextToken = result.nextPaginationToken;
+        if (!nextToken) break;
+      } catch (e) {
+        break;
+      }
+    }
  
-    // Flatten, deduplicate, filter by date
+    // Deduplicate and filter by date
     const seen = new Set();
-    const allReviews = reviewPages
-      .flatMap(p => p.data || [])
+    const reviews = allRawReviews
       .filter(r => {
         if (seen.has(r.id)) return false;
         seen.add(r.id);
@@ -81,19 +71,25 @@ export default async function handler(req) {
         id: r.id,
         text: r.text || '',
         score: r.score,
-        date: new Date(r.date).toISOString().slice(0, 7), // YYYY-MM
+        date: new Date(r.date).toISOString().slice(0, 7),
         dateStr: new Date(r.date).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
       }))
       .filter(r => r.text.trim().length > 5);
  
     // Group by month for trend
     const monthGroups = {};
-    allReviews.forEach(r => {
-      if (!monthGroups[r.date]) monthGroups[r.date] = [];
-      monthGroups[r.date].push(r);
+    reviews.forEach(r => {
+      if (!monthGroups[r.date]) monthGroups[r.date] = 0;
+      monthGroups[r.date]++;
     });
  
-    return new Response(JSON.stringify({
+    const period = {
+      days: daysBack,
+      from: cutoffDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      to: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    };
+ 
+    return res.status(200).json({
       appInfo: {
         name: appInfo.title,
         appId,
@@ -103,27 +99,15 @@ export default async function handler(req) {
         icon: appInfo.icon,
         installs: appInfo.installs,
       },
-      reviews: allReviews,
-      count: allReviews.length,
-      period: {
-        days: daysBack,
-        from: cutoffDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        to: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      },
-      monthGroups: Object.fromEntries(
-        Object.entries(monthGroups).map(([k, v]) => [k, v.length])
-      ),
+      reviews,
+      count: reviews.length,
+      period,
+      monthGroups,
       hasDates: true,
-    }), {
-      status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
  
   } catch (err) {
     console.error('Scrape error:', err.message);
-    return new Response(JSON.stringify({ error: 'Failed to fetch reviews: ' + err.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    return res.status(500).json({ error: 'Failed to fetch reviews: ' + err.message });
   }
-}
+};
