@@ -47,10 +47,12 @@ module.exports = async function handler(req, res) {
         allRawReviews = allRawReviews.concat(batch);
         nextToken = result.nextPaginationToken;
  
-        // Stop if oldest review in batch is older than 12 months
+        // Stop if oldest review in batch is older than 13 months (extra buffer)
         if (batch.length > 0) {
           const oldest = new Date(batch[batch.length - 1].date);
-          if (oldest < trendCutoff) break;
+          const buffer = new Date();
+          buffer.setDate(buffer.getDate() - 395);
+          if (oldest < buffer) break;
         }
         if (!nextToken) break;
       } catch (e) { break; }
