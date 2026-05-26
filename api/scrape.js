@@ -22,84 +22,98 @@ module.exports = async function handler(req, res) {
     const appId = match[1];
     const selectedDays = parseInt(days) || 30;
  
-    // Always fetch 12 months for trend — selected period for main analysis
-    const trendCutoff = new Date();
-    trendCutoff.setDate(trendCutoff.getDate() - 365);
- 
     const selectedCutoff = new Date();
     selectedCutoff.setDate(selectedCutoff.getDate() - selectedDays);
+ 
+    const trendCutoff = new Date();
+    trendCutoff.setMonth(trendCutoff.getMonth() - 12);
  
     // Get app info
     const appInfo = await gplay.app({ appId, lang: 'en', country: 'us' });
  
-    // Fetch enough pages to cover 12 months
-    let allRawReviews = [];
-    let nextToken = undefined;
- 
-    for (let i = 0; i < 15; i++) {
+    // Fetch in parallel across different sort orders to maximise time coverage
+    const fetchBatch = async (sort) => {
       try {
         const result = await gplay.reviews({
           appId, lang: 'en', country: 'us',
-          num: 200, sort: gplay.sort.NEWEST,
-          paginate: true, nextPaginationToken: nextToken,
+          num: 200, sort, paginate: false,
         });
-        const batch = result.data || [];
-        allRawReviews = allRawReviews.concat(batch);
-        nextToken = result.nextPaginationToken;
+        return result.data || [];
+      } catch (e) { return []; }
+    };
  
-        // Stop if oldest review in batch is older than 13 months (extra buffer)
-        if (batch.length > 0) {
-          const oldest = new Date(batch[batch.length - 1].date);
-          const buffer = new Date();
-          buffer.setDate(buffer.getDate() - 395);
-          if (oldest < buffer) break;
-        }
-        if (!nextToken) break;
-      } catch (e) { break; }
-    }
+    const [batch1, batch2, batch3, batch4] = await Promise.all([
+      fetchBatch(gplay.sort.NEWEST),
+      fetchBatch(gplay.sort.RATING),
+      fetchBatch(gplay.sort.HELPFULNESS),
+      gplay.reviews({ appId, lang: 'en', country: 'us', num: 200, sort: gplay.sort.NEWEST, paginate: true })
+        .then(r => r.data || []).catch(() => []),
+    ]);
  
     // Deduplicate
     const seen = new Set();
-    const allReviews = allRawReviews
-      .filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true; })
+    const allReviews = [...batch1, ...batch2, ...batch3, ...batch4]
+      .filter(r => {
+        if (!r || seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+      })
       .map(r => ({
-        id: r.id, text: r.text || '', score: r.score,
+        id: r.id,
+        text: r.text || '',
+        score: r.score,
         date: new Date(r.date).toISOString().slice(0, 7),
         dateStr: new Date(r.date).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
         ts: new Date(r.date).getTime()
       }))
       .filter(r => r.text.trim().length > 5);
  
-    // Selected period reviews — for main analysis
+    // Selected period reviews for main analysis
     const selectedReviews = allReviews.filter(r => r.ts >= selectedCutoff.getTime());
  
-    // Last 12 months reviews — for trend only
-    const trendReviews = allReviews.filter(r => r.ts >= trendCutoff.getTime());
+    // Build trend — only from real data, mark missing months explicitly
+    const trend = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const key = d.toISOString().slice(0, 7);
+      const label = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
  
-    // Group trend reviews by month
-    const monthGroups = {};
-    trendReviews.forEach(r => {
-      if (!monthGroups[r.date]) monthGroups[r.date] = { count: 0, scores: [] };
-      monthGroups[r.date].count++;
-      monthGroups[r.date].scores.push(r.score);
-    });
+      // Only include months where we have real review data
+      const monthReviews = allReviews.filter(r =>
+        r.date === key && r.ts >= trendCutoff.getTime()
+      );
  
-    // Build trend array with sentiment per month based on star ratings
-    const trend = Object.entries(monthGroups)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, data]) => {
-        const scores = data.scores;
-        const total = scores.length;
-        const positive = scores.filter(s => s >= 4).length;
-        const negative = scores.filter(s => s <= 2).length;
+      if (monthReviews.length >= 1) {
+        const total = monthReviews.length;
+        const positive = monthReviews.filter(r => r.score >= 4).length;
+        const negative = monthReviews.filter(r => r.score <= 2).length;
         const neutral = total - positive - negative;
         const posP = Math.round((positive / total) * 100);
         const negP = Math.round((negative / total) * 100);
         const neuP = 100 - posP - negP;
-        const [year, mon] = month.split('-');
-        const label = new Date(parseInt(year), parseInt(mon) - 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-        return { month: label, positive: posP, negative: negP, neutral: neuP };
-      });
+        trend.push({
+          month: label,
+          positive: posP,
+          negative: negP,
+          neutral: neuP,
+          count: total,
+          hasData: true
+        });
+      } else {
+        // Real gap — no data fetched for this month
+        trend.push({
+          month: label,
+          positive: 0,
+          negative: 0,
+          neutral: 0,
+          count: 0,
+          hasData: false
+        });
+      }
+    }
+ 
+    const monthsWithData = trend.filter(t => t.hasData).length;
  
     const period = {
       days: selectedDays,
@@ -116,8 +130,9 @@ module.exports = async function handler(req, res) {
         icon: appInfo.icon,
         installs: appInfo.installs,
       },
-      reviews: selectedReviews,        // selected period — for analysis
-      trend,                            // always 12 months — for chart
+      reviews: selectedReviews,
+      trend,
+      monthsWithData,
       count: selectedReviews.length,
       period,
       hasDates: true,
